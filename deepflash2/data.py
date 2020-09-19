@@ -7,6 +7,7 @@ import os
 import numpy as np
 import imageio
 import shutil
+from joblib import Parallel, delayed
 
 from scipy import ndimage
 from scipy.interpolate import Rbf
@@ -330,6 +331,19 @@ def _clear_weights_cache(path):
     shutil.rmtree(path)
 
 # Cell
+def _preproc_data(file, label_path, preproc_path, classes, instance_labels, ignore, **kwargs):
+    "Preprocesses and saves labels, weights, and pdf."
+    if instance_labels:
+        clabels = None
+        instlabels = _read_msk(label_path, instance_labels=True)
+    else:
+        clabels = _read_msk(label_path, classes)
+        instlabels = None
+    ign = ignore[file.name] if file.name in ignore else None
+    lbl, wgt, pdf = calculate_weights(clabels, instlabels, ignore=ign, n_dims=classes, **kwargs)
+    np.savez_compressed(preproc_path, lbl=lbl, wgt=wgt, pdf=pdf)
+
+# Cell
 class RandomTileDataset(Dataset):
     """
     Pytorch Dataset that creates random tiles with augmentations from the input images.
@@ -352,36 +366,33 @@ class RandomTileDataset(Dataset):
                  value_minimum_range=(0, 0),
                  value_maximum_range=(1, 1),
                  value_slope_range=(1, 1),
-                 bws=6, fds=1, bwf=50, fbr=.1):
+                 bws=6, fds=1, bwf=50, fbr=.1,
+                 n_jobs=None):
 
         store_attr()
         self.c = n_classes
         self.preproc_dir = Path(label_fn(files[0])).parent/'.cache'
         self.preproc_dir.mkdir(exist_ok=True)
         using_cache = False
-
-        for file in progress_bar(files, leave=False):
+        preproc_queue=L()
+        for file in files:
             try:
                 lbl, wgt, pdf = _get_cached_data(_cache_fn(self, file.name))
                 if not using_cache:
                     print(f'Using cached mask weights from {self.preproc_dir}')
                     using_cache = True
-
             except:
-                print('Creating weights for', file.name)
-                label_path = label_fn(file)
-                if instance_labels:
-                    clabels = None
-                    instlabels = _read_msk(label_path, instance_labels=True)
-                else:
-                    clabels = _read_msk(label_path, self.c)
-                    instlabels = None
-                ign = ignore[file.name] if file.name in ignore else None
-                lbl, wgt, pdf = calculate_weights(clabels, instlabels, ignore=ign, n_dims=self.c,
-                                                  bws=bws, fds=fds, bwf=bwf, fbr=fbr)
-                np.savez_compressed(_cache_fn(self, file.name), lbl=lbl, wgt=wgt, pdf=pdf)
+                preproc_queue.append(file)
+
+        if len(preproc_queue)>0:
+            print('Creating weights for', L([f.name for f in preproc_queue]))
+            _ = Parallel(n_jobs=n_jobs, verbose=2, backend='loky')(
+                    delayed(_preproc_data)(
+                        f, label_fn(f), _cache_fn(self, f.name), self.c, instance_labels,
+                        ignore, bws=bws, fds=fds, bwf=bwf, fbr=fbr) for f in preproc_queue)
 
         # Sample mulutiplier: Number of random samplings from augmented image
+        lbl = _read_msk(label_fn(file), self.c)
         self.sample_mult = sample_mult
         if self.sample_mult is None:
             tile_shape = np.array(self.tile_shape)-np.array(self.padding)
@@ -513,7 +524,8 @@ class TileDataset(Dataset):
                  tile_shape=(540,540),
                  padding=(184,184),
                  bws=6, fds=1, bwf=50, fbr=.1,
-                **kwargs):
+                 n_jobs=None,
+                 **kwargs):
 
         store_attr()
         self.c = n_classes
@@ -532,31 +544,29 @@ class TileDataset(Dataset):
         self.out_slices = []
         using_cache = False
 
-
-        for i, file in enumerate(progress_bar(files, leave=False)):
-            if self.label_fn is not None:
+        if self.label_fn is not None:
+            preproc_queue=L()
+            for file in files:
                 try:
                     lbl, wgt, pdf = _get_cached_data(_cache_fn(self, file.name))
                     if not using_cache:
                         print(f'Using cached mask weights from {self.preproc_dir}')
                         using_cache = True
                 except:
-                    print('Creating weights for', file.name)
-                    label_path = label_fn(file)
-                    if instance_labels:
-                        clabels = None
-                        instlabels = _read_msk(label_path, instance_labels=True)
-                    else:
-                        clabels = _read_msk(label_path, self.c)
-                        instlabels = None
-                    ign = ignore[path.name] if file.name in ignore else None
-                    lbl, wgt, pdf = calculate_weights(clabels, instlabels, ignore=ign, n_dims=self.c,
-                                                      bws=bws, fds=fds, bwf=bwf, fbr=fbr)
-                    np.savez_compressed(_cache_fn(self, file.name), lbl=lbl, wgt=wgt, pdf=pdf)
+                    preproc_queue.append(file)
 
+            if len(preproc_queue)>0:
+                print('Creating weights for', L([f.name for f in preproc_queue]))
+                _ = Parallel(n_jobs=n_jobs, verbose=2, backend='loky')(
+                        delayed(_preproc_data)(
+                            f, label_fn(f), _cache_fn(self, f.name), self.c, instance_labels,
+                            ignore, bws=bws, fds=fds, bwf=bwf, fbr=fbr) for f in preproc_queue)
+
+        #print('Tiling')
+        for i, file in enumerate(progress_bar(files, leave=False)):
+            if self.label_fn is not None:
+                lbl, wgt, pdf = _get_cached_data(_cache_fn(self, file.name))
             img = _read_img(file, divide=self.divide)
-
-            # Tiling
             data_shape = img.shape[:-1]
             for ty in range(int(np.ceil(data_shape[0] / self.output_shape[0]))):
                 for tx in range(int(np.ceil(data_shape[1] / self.output_shape[1]))):
