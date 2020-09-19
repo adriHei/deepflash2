@@ -367,7 +367,7 @@ class RandomTileDataset(Dataset):
                  value_maximum_range=(1, 1),
                  value_slope_range=(1, 1),
                  bws=6, fds=1, bwf=50, fbr=.1,
-                 n_jobs=None):
+                 n_jobs=-1):
 
         store_attr()
         self.c = n_classes
@@ -386,7 +386,7 @@ class RandomTileDataset(Dataset):
 
         if len(preproc_queue)>0:
             print('Creating weights for', L([f.name for f in preproc_queue]))
-            _ = Parallel(n_jobs=n_jobs, verbose=2, backend='loky')(
+            _ = Parallel(n_jobs=n_jobs, verbose=2, backend='multiprocessing')(
                     delayed(_preproc_data)(
                         f, label_fn(f), _cache_fn(self, f.name), self.c, instance_labels,
                         ignore, bws=bws, fds=fds, bwf=bwf, fbr=fbr) for f in preproc_queue)
@@ -524,7 +524,7 @@ class TileDataset(Dataset):
                  tile_shape=(540,540),
                  padding=(184,184),
                  bws=6, fds=1, bwf=50, fbr=.1,
-                 n_jobs=None,
+                 n_jobs=-1,
                  **kwargs):
 
         store_attr()
@@ -557,7 +557,7 @@ class TileDataset(Dataset):
 
             if len(preproc_queue)>0:
                 print('Creating weights for', L([f.name for f in preproc_queue]))
-                _ = Parallel(n_jobs=n_jobs, verbose=2, backend='loky')(
+                _ = Parallel(n_jobs=n_jobs, verbose=2, backend='multiprocessing')(
                         delayed(_preproc_data)(
                             f, label_fn(f), _cache_fn(self, f.name), self.c, instance_labels,
                             ignore, bws=bws, fds=fds, bwf=bwf, fbr=fbr) for f in preproc_queue)
