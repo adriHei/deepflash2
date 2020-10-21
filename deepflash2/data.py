@@ -392,7 +392,7 @@ class RandomTileDataset(Dataset):
                         ignore, bws=bws, fds=fds, bwf=bwf, fbr=fbr) for f in preproc_queue)
 
         # Sample mulutiplier: Number of random samplings from augmented image
-        lbl = _read_msk(label_fn(file), self.c)
+        lbl, _, _ = _get_cached_data(_cache_fn(self, file.name))
         self.sample_mult = sample_mult
         if self.sample_mult is None:
             tile_shape = np.array(self.tile_shape)-np.array(self.padding)
