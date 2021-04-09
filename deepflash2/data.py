@@ -277,7 +277,7 @@ def _read_msk(path, n_classes=2, instance_labels=False, **kwargs):
 # Cell
 class BaseDataset(Dataset):
     def __init__(self, files, label_fn=None, instance_labels = False, n_classes=2, divide=None, ignore={},remove_overlap=True,
-                 tile_shape=(540,540), padding=(184,184),preproc_dir=None, fbr=.1, n_jobs=-1, verbose=1, scale=1, loss_weights=True, **kwargs):
+                 tile_shape=(512,512), padding=(0,0),preproc_dir=None, fbr=.1, n_jobs=-1, verbose=1, scale=1, loss_weights=False, **kwargs):
         store_attr('files, label_fn, instance_labels, divide, n_classes, ignore, tile_shape, remove_overlap, padding, fbr, scale, loss_weights')
         self.c = n_classes
         if label_fn is not None:
@@ -480,8 +480,10 @@ class RandomTileDataset(BaseDataset):
 class TileDataset(BaseDataset):
     "Pytorch Dataset that creates random tiles for validation and prediction on new data."
     n_inp = 1
-    def __init__(self, *args, val_length=None, val_seed=42, is_zarr=False, **kwargs):
+    def __init__(self, *args, val_length=None, val_seed=42, is_zarr=False, shift=1., border_padding_factor=0.25, **kwargs):
         super().__init__(*args, **kwargs)
+        self.shift = shift
+        self.bpf = border_padding_factor
         self.output_shape = tuple(int(t - p) for (t, p) in zip(self.tile_shape, self.padding))
         self.tiler = DeformationField(self.tile_shape, scale=self.scale)
         self.image_indices = []
@@ -504,16 +506,26 @@ class TileDataset(BaseDataset):
             if not is_zarr: self.data[file.name] = img
             # Tiling
             data_shape = tuple(int(x//self.scale) for x in img.shape[:-1])
-            for ty in range(max(1, int(np.ceil(data_shape[0] / self.output_shape[0])))):
-                for tx in range(max(1, int(np.ceil(data_shape[1] / self.output_shape[1])))):
-                    self.centers.append((int((ty + 0.5) * self.output_shape[0]*self.scale),
-                                        int((tx + 0.5) * self.output_shape[1]*self.scale)))
+            start_points = [o//2 - o*self.bpf for o in self.output_shape]
+            end_points = [(s - st) for s, st in zip(data_shape, start_points)]
+            n_points = [int((s+2*o*self.bpf)//(o*self.shift))+1 for s, o in zip(data_shape, self.output_shape)]
+            center_points = [np.linspace(st, e, num=n, endpoint=True, dtype=np.int64) for st, e, n in zip(start_points, end_points, n_points)]
+            for cx in center_points[1]:
+                for cy in center_points[0]:
+                    self.centers.append((int(cy*self.scale), int(cx*self.scale)))
                     self.image_indices.append(i)
                     self.image_shapes.append(data_shape)
-                    sliceDef = tuple(slice(int(tIdx * o), int(min((tIdx + 1) * o, s))) for (tIdx, o, s) in zip((ty, tx), self.output_shape, data_shape))
-                    self.out_slices.append(sliceDef)
-                    sliceDef = tuple(slice(0, int(min((tIdx + 1) * o, s) - tIdx * o)) for (tIdx, o, s) in zip((ty, tx), self.output_shape, data_shape))
-                    self.in_slices.append(sliceDef)
+
+                    # Calculate output slices for whole image
+                    out_slice = tuple(slice(int((c - o/2).clip(0, s)), int((c + o/2).clip(max=s)))
+                                     for (c, o, s) in zip((cy, cx), self.output_shape, data_shape))
+                    self.out_slices.append(out_slice)
+
+                    # Calculate input slices for tile
+                    in_slice = tuple(slice(int((o/2-c).clip(0)), int(np.float64(o).clip(max=(s-c+o/2)))) for
+                                     (c, o, s) in zip((cy, cx), self.output_shape, data_shape))
+                    self.in_slices.append(in_slice)
+                    assert img[in_slice].shape == img[out_slice].shape, 'Input/Output slices do not match'
                     j += 1
 
         if val_length:
@@ -565,6 +577,6 @@ class TileDataset(BaseDataset):
                     out_ll.append(np.empty((*outShape, self.c)))
                 else:
                     out_ll.append(np.empty(outShape))
-            out_ll[outIdx][outSlice] = tiles[idx][inSlice]
+            out_ll[outIdx][outSlice] += np.array(tiles[idx][inSlice])
 
         return out_ll

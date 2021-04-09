@@ -12,6 +12,7 @@ from sklearn import svm
 from sklearn.model_selection import KFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from scipy.ndimage.filters import gaussian_filter
 import matplotlib.pyplot as plt
 
 from fastprogress import progress_bar
@@ -175,28 +176,58 @@ def energy_max(e, ks=20, dim=None):
     return torch.max(e)
 
 # Cell
+# from https://github.com/MIC-DKFZ/nnUNet/blob/2fade8f32607220f8598544f0d5b5e5fa73768e5/nnunet/network_architecture/neural_network.py#L250
+def _get_gaussian(patch_size, sigma_scale=1. / 8) -> np.ndarray:
+    tmp = np.zeros(patch_size)
+    center_coords = [i // 2 for i in patch_size]
+    sigmas = [i * sigma_scale for i in patch_size]
+    tmp[tuple(center_coords)] = 1
+    gaussian_importance_map = gaussian_filter(tmp, sigmas, 0, mode='constant', cval=0)
+    gaussian_importance_map = gaussian_importance_map / np.max(gaussian_importance_map) * 1
+    gaussian_importance_map = gaussian_importance_map.astype(np.float32)
+
+    # gaussian_importance_map cannot be 0, otherwise we may end up with nans!
+    gaussian_importance_map[gaussian_importance_map == 0] = np.min(
+        gaussian_importance_map[gaussian_importance_map != 0])
+
+    return gaussian_importance_map
+
+# Cell
 @patch
-def predict_tiles(self:Learner, ds_idx=1, dl=None, path=None, mc_dropout=False, n_times=1, use_tta=False,
-                       tta_merge='mean', tta_tfms=None, uncertainty_estimates=True, energy_T=1):
+def predict_tiles(self:Learner, ds_idx=1, dl=None, path=None, mc_dropout=False, n_times=1, use_tta=True, verbose=0,
+                       tta_merge='mean', tta_tfms=None, uncertainty_estimates=True, energy_T=1, merge='gauss'):
     "Make predictions and reconstruct tiles, optional with dropout and/or tta applied."
 
     if dl is None: dl = self.dls[ds_idx].new(shuffled=False, drop_last=False)
     assert isinstance(dl.dataset, TileDataset), "Provide dataloader containing a TileDataset"
-    if use_tta: tfms = tta_tfms or [tta.HorizontalFlip(), tta.Rotate90(angles=[90,180,270])]
+    if use_tta:
+        tfms = tta_tfms or [tta.HorizontalFlip(), tta.VerticalFlip()] #tta.Rotate90(angles=[90,180,270])
+        if verbose>0: print('Using Test-Time Augmentation with:', tfms)
     else: tfms=[]
+
+    if merge == 'gauss':
+        merge_map = _get_gaussian(dl.output_shape)
+    elif merge == 'mean':
+        merge_map = np.ones(dl.output_shape)
+    else:
+        raise NotImplementedError("Use 'gauss' or 'mean' for merge function.")
+    mm = torch.from_numpy(merge_map)
 
     self.model.eval()
     if mc_dropout: self.apply_dropout()
 
     store = str(path) if path else zarr.storage.TempStore()
     root = zarr.group(store=store, overwrite=True)
-    g_smx, g_seg, g_std, g_eng  = root.create_groups('smx', 'seg', 'std', 'energy')
+    g_smx, g_seg, g_std, g_eng, g_wgt  = root.create_groups('smx', 'seg', 'std', 'energy', 'wgt')
+    active = ['smx', 'std', 'eng', 'wgt'] if uncertainty_estimates else ['smx', 'wgt']
 
     i = 0
     last_file = None
+    if verbose>0: print(f'Starting prediction with overlapping tiles (shift factor {dl.shift})...')
     for data in progress_bar(dl, leave=False):
         if isinstance(data, TensorImage): images = data
         else: images, _, _ = data
+        mm = mm.to(images)
         m_smx = tta.Merger()
         m_energy = tta.Merger()
         out_list_smx = []
@@ -209,16 +240,27 @@ def predict_tiles(self:Learner, ds_idx=1, dl=None, path=None, mc_dropout=False, 
                 if dl.padding[0]!= images.shape[-1]-out.shape[-1]:
                     padding = ((images.shape[-1]-out.shape[-1]-dl.padding[0])//2,)*4
                     out = F.pad(out, padding)
-                m_smx.append(F.softmax(out, dim=1))
+                if dl.c==1:
+                    out_act = torch.sigmoid(out)
+                    out_act = torch.cat([(1-out_act), out_act], dim=1)
+                else:
+                    out_act = F.softmax(out, dim=1)
+                m_smx.append(out_act)
                 if uncertainty_estimates:
                     e = (energy_T*torch.logsumexp(out/energy_T, dim=1)) #negative energy score
                     m_energy.append(e)
 
         ll = []
-        ll.append([x for x in m_smx.result().permute(0,2,3,1).cpu().numpy()])
+        batch_smx = m_smx.result()*mm.view(1,1,*mm.shape)
+        ll.append([x for x in batch_smx.permute(0,2,3,1).cpu().numpy()])
+
         if uncertainty_estimates:
-            ll.append([x for x in torch.mean(m_smx.result('std'), 1).cpu().numpy()])
-            ll.append([x for x in m_energy.result().cpu().numpy()])
+            batch_std = torch.mean(m_smx.result('std'), 1)*mm.view(1,*mm.shape)
+            ll.append([x for x in batch_std.cpu().numpy()])
+
+            batch_energy =  m_energy.result()*mm.view(1,*mm.shape)
+            ll.append([x for x in batch_energy.cpu().numpy()])
+
         for j, preds in enumerate(zip(*ll)):
             if len(preds)==3: smx,std,eng = preds
             else: smx = preds[0]
@@ -228,17 +270,27 @@ def predict_tiles(self:Learner, ds_idx=1, dl=None, path=None, mc_dropout=False, 
             outSlice = dl.out_slices[idx]
             inSlice = dl.in_slices[idx]
             if last_file!=f:
-                z_smx = g_smx.zeros(f.name, shape=(*outShape, dl.c), dtype='float32')
-                z_seg = g_seg.zeros(f.name, shape=outShape, dtype='uint8')
+                z_smx = g_smx.zeros(f.name, shape=(*outShape, max(2, dl.c)), dtype='float32')
                 z_std = g_std.zeros(f.name, shape=outShape, dtype='float32')
                 z_eng = g_eng.zeros(f.name, shape=outShape, dtype='float32')
+                z_wgt = g_wgt.zeros(f.name, shape=outShape, dtype='float32')
                 last_file = f
-            z_smx[outSlice] = smx[inSlice]
-            z_seg[outSlice] = np.argmax(smx, axis=-1)[inSlice]
+            z_smx[outSlice] += smx[inSlice]
+            z_wgt[outSlice] += merge_map[inSlice]
             if uncertainty_estimates:
-                z_std[outSlice] = std[inSlice]
-                z_eng[outSlice] = eng[inSlice]
+                z_std[outSlice] += std[inSlice]
+                z_eng[outSlice] += eng[inSlice]
         i += dl.bs
+
+    if verbose>0: print(f'Merging predictions with {merge} weights...')
+    for k in progress_bar(g_smx, leave=False):
+        wgt = g_wgt[k][:]
+        smx_norm = g_smx[k][:] / wgt[..., np.newaxis]
+        g_smx[k] = smx_norm
+        g_seg[k] = np.argmax(smx_norm, axis=-1)
+        if uncertainty_estimates:
+            g_std[k] /= wgt
+            g_eng[k] /= wgt
 
     return g_smx, g_seg, g_std, g_eng
 
