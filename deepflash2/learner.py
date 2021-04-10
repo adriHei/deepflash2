@@ -75,8 +75,10 @@ class Config:
     loss:str = 'WeightedSoftmaxCrossEntropy'
     n_iter:int = 1000
 
-    # Train Validation Settings
+    # Validation and Prediction Settings
     tta:bool = True
+    border_padding_factor:float = 0.25
+    shift:float = 0.5
 
     # Train Data Augmentation
     CLAHE_clip_limit:float = 0.0
@@ -101,7 +103,6 @@ class Config:
 
     # Pred Settings
     pred_tta:bool = True
-    extra_padding:int = 100
 
     # OOD Settings
     kernel:str = 'rbf'
@@ -355,6 +356,9 @@ class EnsembleLearner(GetAttr):
         for key, value in get_default_shapes(self.arch).items():
             ds_kwargs.setdefault(key, value)
         # Settings from config
+        ds_kwargs['n_classes']= self.c
+        ds_kwargs['shift']= 1.
+        ds_kwargs['border_padding_factor']= 0.
         ds_kwargs['loss_weights'] = True if self.loss=='WeightedSoftmaxCrossEntropy' else False
         ds_kwargs['zoom_sigma'] = self.zoom_sigma
         ds_kwargs['flip'] = self.flip
@@ -363,6 +367,18 @@ class EnsembleLearner(GetAttr):
         if sum(self.albumentation_kwargs.values())>0:
             ds_kwargs['albumentation_tfms'] = self.compose_albumentations(**self.albumentation_kwargs)
         return ds_kwargs
+
+    @property
+    def pred_ds_kwargs(self):
+        # Setting default shapes and padding
+        ds_kwargs = self.add_ds_kwargs.copy()
+        for key, value in get_default_shapes(self.arch).items():
+            ds_kwargs.setdefault(key, value)
+        ds_kwargs['n_classes']= self.c
+        ds_kwargs['shift']= self.shift
+        ds_kwargs['border_padding_factor']= self.border_padding_factor
+        return ds_kwargs
+
 
     def get_loss(self):
         if self.loss == 'WeightedSoftmaxCrossEntropy': return WeightedSoftmaxCrossEntropy(axis=1)
@@ -461,10 +477,7 @@ class EnsembleLearner(GetAttr):
     def predict(self, files, model_no, path=None, **kwargs):
         model_path = self.models[model_no]
         model = self.load_model(model_path)
-        ds_kwargs = self.ds_kwargs
-        # Adding extra padding (overlap) for models that have the same input and output shape
-        if ds_kwargs['padding'][0]==0: ds_kwargs['padding'] = (self.extra_padding,)*2
-        ds = TileDataset(files, **ds_kwargs)
+        ds = TileDataset(files, **self.pred_ds_kwargs)
         dls = DataLoaders.from_dsets(ds, batch_size=self.bs, after_batch=self.get_batch_tfms(), shuffle=False, drop_last=False, **self.dl_kwargs)
         if torch.cuda.is_available(): dls.cuda()
         learn = Learner(dls, model, loss_func=self.loss_fn)

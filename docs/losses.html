@@ -115,6 +115,43 @@ nb_path: "nbs/05_losses.ipynb"
 
 <div class="cell border-box-sizing text_cell rendered"><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="Segmenation-Models-Pytorch-Integration">Segmenation Models Pytorch Integration<a class="anchor-link" href="#Segmenation-Models-Pytorch-Integration"> </a></h2><p>Helper functions to load popular segmentation losses from <a href="https://github.com/qubvel/segmentation_models.pytorch">Segmenation Models Pytorch</a>.</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h1 id="export">export<a class="anchor-link" href="#export"> </a></h1><p>def load_smp_loss(loss_name, mode='', alpha=0.5, beta=0.5, gamma=2.0, reduction='mean', eps = 1e-08, **kwargs):
+    'Load segmentation_models_pytorch model'
+    smp = import_package('segmentation_models_pytorch')
+    if loss_name=="DiceLoss": return smp.losses.DiceLoss(eps=eps)
+    elif loss_name=="TverskyLoss": 
+        return kornia.losses.TverskyLoss(alpha=alpha, beta=beta, eps=eps)
+    elif loss_name=="FocalLoss": 
+        return kornia.losses.FocalLoss(alpha=alpha, gamma=gamma, reduction=reduction, eps=eps)
+    else: raise NotImplementedError</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>output = TensorImage(torch.randn(4, 5, 356, 356, requires_grad=True))
+targets = TensorMask(torch.ones(4, 356, 356).long())
+tst = load_kornia_loss("TverskyLoss", alpha=0.5, beta=0.5) # equals dice loss
+loss = tst(output, targets)
+tst2 = load_kornia_loss("DiceLoss")
+loss2 = tst2(output, targets)
+test_eq(loss.detach().numpy(), loss2.detach().numpy())</p>
+<p>tst3 = load_kornia_loss("FocalLoss")
+loss3 = tst3(output, targets)</p>
+
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered"><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
 <h2 id="Kornia-Segmentation-Losses-Integration">Kornia Segmentation Losses Integration<a class="anchor-link" href="#Kornia-Segmentation-Losses-Integration"> </a></h2><p>Helper functions to load segmentation losses from <a href="https://github.com/kornia/kornia">kornia</a>. 
 Read the <a href="https://kornia.readthedocs.io/en/latest/losses.html#module">docs</a> for a detailed explanation.</p>
 
