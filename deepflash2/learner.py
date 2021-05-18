@@ -28,7 +28,7 @@ from fastai.vision.augment import Brightness, Contrast, Saturation
 from fastai.losses import CrossEntropyLossFlat
 
 from .metrics import Dice_f1, Iou
-from .losses import WeightedSoftmaxCrossEntropy,load_kornia_loss
+from .losses import get_loss
 from .callbacks import ElasticDeformCallback
 from .models import get_default_shapes, load_smp_model
 from .data import TileDataset, RandomTileDataset, _read_img, _read_msk
@@ -72,7 +72,7 @@ class Config:
     wd:float = 0.001
     mpt:bool = False
     optim:str = 'ranger'
-    loss:str = 'WeightedSoftmaxCrossEntropy'
+    loss:str = 'WeightedCrossEntropy'
     n_iter:int = 1000
 
     # Validation and Prediction Settings
@@ -90,12 +90,14 @@ class Config:
     deformation_grid:int = 150
     deformation_magnitude:int = 10
 
-    # Loss Settings Kornia
+    # Loss Settings
+    mode:str = 'multiclass' #currently only tested for multiclass
     loss_alpha:float = 0.5 # Twerksky/Focal loss
     loss_beta:float = 0.5 # Twerksy Loss
     loss_gamma:float = 2.0 # Focal loss
+    loss_smooth_factor:float = 0. #SoftCrossEntropyLoss
 
-    # Loss Mask Weights (WeightedSoftmaxCrossEntropy)
+    # Loss Mask Weights (WeightedCrossEntropy)
     bwf:int = 25
     bws:int = 10
     fds:int = 10
@@ -250,6 +252,9 @@ def predict_tiles(self:Learner, ds_idx=1, dl=None, path=None, mc_dropout=False, 
                 if uncertainty_estimates:
                     e = (energy_T*torch.logsumexp(out/energy_T, dim=1)) #negative energy score
                     m_energy.append(e)
+                    for x in e:
+                        plt.imshow(x.cpu().numpy())
+                        plt.show()
 
         ll = []
         batch_smx = m_smx.result()*mm.view(1,1,*mm.shape)
@@ -359,7 +364,7 @@ class EnsembleLearner(GetAttr):
         ds_kwargs['n_classes']= self.c
         ds_kwargs['shift']= 1.
         ds_kwargs['border_padding_factor']= 0.
-        ds_kwargs['loss_weights'] = True if self.loss=='WeightedSoftmaxCrossEntropy' else False
+        ds_kwargs['loss_weights'] = True if self.loss=='WeightedCrossEntropyLoss' else False
         ds_kwargs['zoom_sigma'] = self.zoom_sigma
         ds_kwargs['flip'] = self.flip
         ds_kwargs['deformation_grid']= (self.deformation_grid,)*2
@@ -381,11 +386,13 @@ class EnsembleLearner(GetAttr):
 
 
     def get_loss(self):
-        if self.loss == 'WeightedSoftmaxCrossEntropy': return WeightedSoftmaxCrossEntropy(axis=1)
-        if self.loss == 'CrossEntropyLoss': return CrossEntropyLossFlat(axis=1)
-        else:
-            kwargs = {'alpha':self.loss_alpha, 'beta':self.loss_beta, 'gamma':self.loss_gamma}
-            return load_kornia_loss(self.loss, **kwargs)
+        kwargs = {'mode':self.mode,
+                  'classes':[x for x in range(1, self.c)],
+                  'smooth_factor': self.loss_smooth_factor,
+                  'alpha':self.loss_alpha,
+                  'beta':self.loss_beta,
+                  'gamma':self.loss_gamma}
+        return get_loss(self.loss, **kwargs)
 
     def get_model(self, pretrained):
         if self.arch in ["unet_deepflash2",  "unet_falk2019", "unet_ronnberger2015", "unet_custom", "unext50_deepflash2"]:
@@ -436,7 +443,7 @@ class EnsembleLearner(GetAttr):
     def get_batch_tfms(self):
         self.stats = self.stats or self.ds.compute_stats()
         tfms = [Normalize.from_stats(*self.stats)]
-        if isinstance(self.loss_fn, WeightedSoftmaxCrossEntropy):
+        if self.loss=='WeightedCrossEntropyLoss':
             tfms.append(WeightTransform(self.out_size, **self.mw_kwargs))
         return tfms
 

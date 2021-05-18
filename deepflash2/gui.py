@@ -32,7 +32,7 @@ GRID_COLS = 2
 # Cell
 _archs = ["unext50_deepflash2", "unet_deepflash2",  "unet_falk2019", "unet_ronnberger2015",
          'Unet', 'UnetPlusPlus', 'MAnet', 'FPN', 'PAN', 'PSPNet', 'Linknet', 'DeepLabV3', 'DeepLabV3Plus']
-_losses = ['WeightedSoftmaxCrossEntropy', 'FocalLoss', 'TverskyLoss', 'DiceLoss', 'CrossEntropyLoss']
+_losses = ['WeightedCrossEntropyLoss', 'FocalLoss', 'TverskyLoss', 'DiceLoss', 'CrossEntropyLoss']
 _pretrained = ["new", "wue_cFOS", "wue_Parv", "wue_GFP", "wue_OPN3"]
 
 # Cell
@@ -928,12 +928,12 @@ class MWWidget(BasePopUpParamWidget, GetAttr):
         self.widget.set_title(0, 'Loss Function')
         self.widget.layout.display = "none"
         self.params['loss'].observe(self.on_arch_change, 'value')
-        self.on_arch_change({'new':'WeightedSoftmaxCrossEntropy'})
+        self.on_arch_change({'new':'WeightedCrossEntropyLoss'})
 
     def on_arch_change(self, change):
         enable = ['loss']
         self.show.disabled = True
-        if change['new'] ==  'WeightedSoftmaxCrossEntropy':
+        if change['new'] ==  'WeightedCrossEntropyLoss':
             enable += ['bwf', 'fbr', 'bws', 'fds']
             self.show.disabled = False
         elif change['new'] ==  'FocalLoss': enable += ['loss_gamma', 'loss_alpha']

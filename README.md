@@ -67,6 +67,21 @@ For more information on how to run docker see [docker orientation and setup](htt
 
 We provide a model library with pretrained model weights. Visit our [model library documentation](https://matjesg.github.io/deepflash2/model_library.html) for information on the datasets of the pretrained models.
 
+### Citing
+
+We're working on a peer reviewed publication. Until than, the preliminary citation is:
+
+```
+@misc{griebel2021deepflash2,
+  author = {Matthias Griebel},
+  title = {DeepFLasH2 - a deep learning pipeline for segmentation of fluorescent labels in microscopy images},
+  year = {2021},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/matjesg/deepflash2}}
+}
+```
+
 ## Creating segmentation masks with Fiji/ImageJ
 
 If you don't have labelled training data available, you can use this [instruction manual](https://github.com/matjesg/DeepFLaSH/raw/master/ImageJ/create_maps_howto.pdf) for creating segmentation maps.
